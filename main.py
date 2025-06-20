@@ -5,7 +5,6 @@ import json
 import os
 import random
 import string
-import hashlib # Thêm thư viện hashlib cho MD5
 from datetime import datetime, timedelta
 from threading import Thread, Event, Lock
 
@@ -21,10 +20,6 @@ DATA_FILE = 'user_data.json'
 CAU_PATTERNS_FILE = 'cau_patterns.json'
 CODES_FILE = 'codes.json'
 
-# --- Cấu hình nâng cao ---
-TX_HISTORY_LENGTH = 7 # Chiều dài lịch sử cầu để học mẫu (trước đây là 5)
-MD5_LOOKBACK_LENGTH = 3 # Số lượng kết quả MD5 gần nhất để kiểm tra (2 Gãy => 1 Khác)
-
 # --- Khởi tạo Flask App và Telegram Bot ---
 app = Flask(__name__)
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -37,14 +32,14 @@ prediction_stop_event = Event() # Để kiểm soát luồng dự đoán
 bot_initialized = False # Cờ để đảm bảo bot chỉ được khởi tạo một lần
 bot_init_lock = Lock() # Khóa để tránh race condition khi khởi tạo
 
-# Global data structures
-user_data = {}
-# Thay thế CAU_XAU/CAU_DEP bằng CAU_PATTERNS với confidence score
-CAU_PATTERNS = {} # {pattern_string: confidence_score (float)}
+# Global sets for patterns and codes
+CAU_XAU = set()
+CAU_DEP = set()
 GENERATED_CODES = {} # {code: {"value": 1, "type": "day", "used_by": null, "used_time": null}}
-md5_results_history = [] # Lịch sử kết quả MD5 ('Gãy' hoặc 'Khác')
 
 # --- Quản lý dữ liệu người dùng, mẫu cầu và code ---
+user_data = {}
+
 def load_user_data():
     global user_data
     if os.path.exists(DATA_FILE):
@@ -63,21 +58,25 @@ def save_user_data(data):
         json.dump(data, f, indent=4)
 
 def load_cau_patterns():
-    global CAU_PATTERNS
+    global CAU_XAU, CAU_DEP
     if os.path.exists(CAU_PATTERNS_FILE):
         with open(CAU_PATTERNS_FILE, 'r') as f:
             try:
-                CAU_PATTERNS = json.load(f)
+                data = json.load(f)
+                CAU_DEP.update(data.get('dep', []))
+                CAU_XAU.update(data.get('xau', []))
             except json.JSONDecodeError:
                 print(f"Lỗi đọc {CAU_PATTERNS_FILE}. Khởi tạo lại mẫu cầu.")
-                CAU_PATTERNS = {}
+                CAU_DEP = set()
+                CAU_XAU = set()
     else:
-        CAU_PATTERNS = {}
-    print(f"Loaded {len(CAU_PATTERNS)} patterns.")
+        CAU_DEP = set()
+        CAU_XAU = set()
+    print(f"Loaded {len(CAU_DEP)} dep patterns and {len(CAU_XAU)} xau patterns.")
 
 def save_cau_patterns():
     with open(CAU_PATTERNS_FILE, 'w') as f:
-        json.dump(CAU_PATTERNS, f, indent=4)
+        json.dump({'dep': list(CAU_DEP), 'xau': list(CAU_XAU)}, f, indent=4)
 
 def load_codes():
     global GENERATED_CODES
@@ -130,63 +129,40 @@ def du_doan_theo_xi_ngau(dice_list):
     d1, d2, d3 = dice_list[-1]
     total = d1 + d2 + d3
 
-    # Một phương pháp dự đoán đơn giản dựa trên tổng và từng con xúc xắc
-    # Có thể phức tạp hơn với các quy tắc khác
-    results = []
+    result_list = []
     for d in [d1, d2, d3]:
         tmp = d + total
-        while tmp > 6: # Đảm bảo nằm trong phạm vi 1-6
+        if tmp in [4, 5]:
+            tmp -= 4
+        elif tmp >= 6:
             tmp -= 6
-        if tmp % 2 == 0:
-            results.append("Tài")
-        else:
-            results.append("Xỉu")
+        result_list.append("Tài" if tmp % 2 == 0 else "Xỉu")
 
-    # Chọn kết quả xuất hiện nhiều nhất, nếu hòa thì ưu tiên Tài
-    tai_count = results.count("Tài")
-    xiu_count = results.count("Xỉu")
-    if tai_count >= xiu_count:
-        return "Tài"
-    else:
-        return "Xỉu"
-
+    return max(set(result_list), key=result_list.count)
 
 def tinh_tai_xiu(dice):
     total = sum(dice)
     return "Tài" if total >= 11 else "Xỉu", total
 
-# --- Cập nhật mẫu cầu động và độ tin cậy ---
-def update_cau_patterns(pattern_str, prediction_correct):
-    global CAU_PATTERNS
-    # Tăng/giảm confidence score. Giả sử 1.0 là điểm khởi đầu, min 0.1, max 5.0
-    initial_confidence = 1.0
-    increase_factor = 0.2
-    decrease_factor = 0.5 # Giảm nhiều hơn khi sai để nhanh chóng loại bỏ mẫu xấu
-
-    current_confidence = CAU_PATTERNS.get(pattern_str, initial_confidence)
-
+# --- Cập nhật mẫu cầu động ---
+def update_cau_patterns(new_cau, prediction_correct):
+    global CAU_DEP, CAU_XAU
     if prediction_correct:
-        new_confidence = min(current_confidence + increase_factor, 5.0)
+        CAU_DEP.add(new_cau)
+        if new_cau in CAU_XAU:
+            CAU_XAU.remove(new_cau)
     else:
-        new_confidence = max(current_confidence - decrease_factor, 0.1)
-    
-    CAU_PATTERNS[pattern_str] = new_confidence
+        CAU_XAU.add(new_cau)
+        if new_cau in CAU_DEP:
+            CAU_DEP.remove(new_cau)
     save_cau_patterns()
-    # print(f"Cập nhật mẫu cầu '{pattern_str}': Confidence mới = {new_confidence:.2f}")
+    # print(f"Đã cập nhật mẫu cầu: Cầu đẹp: {len(CAU_DEP)}, Cầu xấu: {len(CAU_XAU)}")
 
-def get_pattern_prediction_adjustment(pattern_str):
-    """
-    Trả về yếu tố điều chỉnh dự đoán dựa trên confidence score của mẫu cầu.
-    Nếu confidence cao (> ngưỡng), có thể tin tưởng. Nếu thấp (< ngưỡng), có thể đảo chiều.
-    """
-    confidence = CAU_PATTERNS.get(pattern_str, 1.0)
-    
-    if confidence >= 2.5: # Ngưỡng để coi là cầu đẹp đáng tin
-        return "giữ nguyên"
-    elif confidence <= 0.5: # Ngưỡng để coi là cầu xấu, cần đảo chiều
-        return "đảo chiều"
-    else:
-        return "theo xí ngầu" # Không đủ độ tin cậy để điều chỉnh
+def is_cau_xau(cau_str):
+    return cau_str in CAU_XAU
+
+def is_cau_dep(cau_str):
+    return cau_str in CAU_DEP and cau_str not in CAU_XAU # Đảm bảo không trùng cầu xấu
 
 # --- Lấy dữ liệu từ API ---
 def lay_du_lieu():
@@ -205,28 +181,10 @@ def lay_du_lieu():
         print("Lỗi giải mã JSON từ API. Phản hồi không phải JSON hợp lệ.")
         return None
 
-def calculate_md5_outcome(open_code_str, expect_str):
-    """
-    Giả định cách tính MD5 và so sánh để xác định 'Gãy' hoặc 'Khác'.
-    Đây là phần bạn cần điều chỉnh dựa trên quy tắc MD5 thực tế của game.
-    Ví dụ: so sánh MD5 của chuỗi "OpenCode-Expect" với một giá trị cố định hoặc một quy tắc nào đó.
-    Ở đây, tôi tạo một ví dụ đơn giản: nếu MD5 của (OpenCode + Expect) chứa '00' thì là 'Gãy', ngược lại là 'Khác'.
-    """
-    combined_string = f"{open_code_str}-{expect_str}"
-    md5_hash = hashlib.md5(combined_string.encode('utf-8')).hexdigest()
-    
-    # Đây là ví dụ logic MD5. Bạn cần thay thế bằng logic thực tế của bạn.
-    # Ví dụ: kiểm tra các ký tự cụ thể trong hash, hoặc so sánh với một hash mẫu.
-    if '00' in md5_hash[-2:]: # Ví dụ: 2 ký tự cuối cùng là '00' thì gãy
-        return 'Gãy'
-    else:
-        return 'Khác'
-
 # --- Logic chính của Bot dự đoán (chạy trong luồng riêng) ---
 def prediction_loop(stop_event: Event):
     last_id = None
     tx_history = []
-    global md5_results_history # Dùng biến global
     
     print("Prediction loop started.")
     while not stop_event.is_set():
@@ -261,69 +219,34 @@ def prediction_loop(stop_event: Event):
             
             ket_qua_tx, tong = tinh_tai_xiu(dice)
 
-            # Cập nhật lịch sử MD5
-            md5_outcome = calculate_md5_outcome(open_code, expect)
-            md5_results_history.append(md5_outcome)
-            if len(md5_results_history) > MD5_LOOKBACK_LENGTH:
-                md5_results_history.pop(0)
-
-            # Lưu lịch sử phiên Tài Xỉu
-            if len(tx_history) >= TX_HISTORY_LENGTH:
+            # Lưu lịch sử 5 phiên
+            if len(tx_history) >= 5:
                 tx_history.pop(0)
             tx_history.append("T" if ket_qua_tx == "Tài" else "X")
 
             next_expect = str(int(expect) + 1).zfill(len(expect))
-            du_doan_co_so = du_doan_theo_xi_ngau([dice]) # Dự đoán ban đầu theo xí ngầu
-            du_doan_cuoi_cung = du_doan_co_so
+            du_doan = du_doan_theo_xi_ngau([dice])
+
             ly_do = ""
-            current_cau_str = ""
+            current_cau = ""
 
-            # --- Logic điều chỉnh dự đoán ---
-            # 1. Áp dụng quy tắc MD5 (nếu có đủ lịch sử và quy tắc MD5 chỉ ra)
-            md5_rule_applied = False
-            if len(md5_results_history) >= 2 and md5_results_history[-2:] == ['Gãy', 'Gãy']:
-                # Nếu 2 lần gần nhất là 'Gãy', thì lần này sẽ là 'Khác'
-                # 'Khác' nghĩa là nó không gãy, tức là dự đoán theo xí ngầu có khả năng đúng
-                # Nếu dự đoán MD5 "gãy" thì ta đảo chiều, nếu "không gãy" thì ta giữ nguyên
-                # Trong trường hợp này, nếu 2 lần liên tiếp là Gãy, thì lần này là "Khác" (không gãy)
-                # nghĩa là dự đoán cơ sở (xí ngầu) sẽ đúng.
-                # Tuy nhiên, nếu "Khác" nghĩa là sẽ "gãy" (đảo chiều) thì phải đảo.
-                # Cần làm rõ "kết quả khác" là gì trong ngữ cảnh dự đoán.
-                # Giả sử "Khác" trong ngữ cảnh này là dự đoán cơ sở sẽ đúng.
-                # Nếu không, bạn cần điều chỉnh logic ở đây.
-                
-                # Với ngữ cảnh "2 Gãy -> 1 Khác", giả định "Khác" nghĩa là dự đoán cơ sở sẽ "không Gãy" -> đúng
-                # Vậy nếu dự đoán cơ sở là Tài, và MD5 là "Khác" (nghĩa là không gãy), thì giữ nguyên Tài.
-                # Logic này có thể phức tạp tùy thuộc vào ý nghĩa thực sự của 'Gãy'/'Khác' trong game của bạn.
-                # TẠM THỜI BỎ QUA VIỆC ĐẢO CHIỀU DỰ ĐOÁN VÀ CHỈ GHI NHẬN LÝ DO
-                # Nếu "Khác" có nghĩa là phải đảo chiều dự đoán, bạn cần uncomment và chỉnh sửa dòng dưới
-                # du_doan_cuoi_cung = "Xỉu" if du_doan_co_so == "Tài" else "Tài"
-                ly_do = f"AI Theo quy tắc MD5 (2 Gãy -> 1 Khác) → {du_doan_co_so}"
-                md5_rule_applied = True
-                print(f"MD5 history: {md5_results_history}. Quy tắc 2 Gãy -> 1 Khác được áp dụng.")
-
-
-            # 2. Áp dụng mẫu cầu động (chỉ nếu quy tắc MD5 chưa được áp dụng rõ ràng)
-            if not md5_rule_applied and len(tx_history) == TX_HISTORY_LENGTH:
-                current_cau_str = ''.join(tx_history)
-                pattern_adjustment = get_pattern_prediction_adjustment(current_cau_str)
-
-                if pattern_adjustment == "giữ nguyên":
-                    ly_do = f"AI Cầu đẹp ({current_cau_str}) → Giữ nguyên kết quả"
-                elif pattern_adjustment == "đảo chiều":
-                    du_doan_cuoi_cung = "Xỉu" if du_doan_co_so == "Tài" else "Tài" # Đảo chiều
-                    ly_do = f"AI Cầu xấu ({current_cau_str}) → Đảo chiều kết quả"
+            if len(tx_history) < 5:
+                ly_do = "AI Dự đoán theo xí ngầu (chưa đủ mẫu cầu)"
+            else:
+                current_cau = ''.join(tx_history)
+                if is_cau_dep(current_cau):
+                    ly_do = f"AI Cầu đẹp ({current_cau}) → Giữ nguyên kết quả"
+                elif is_cau_xau(current_cau):
+                    du_doan = "Xỉu" if du_doan == "Tài" else "Tài" # Đảo chiều
+                    ly_do = f"AI Cầu xấu ({current_cau}) → Đảo chiều kết quả"
                 else:
-                    ly_do = f"AI Không rõ/Đang học mẫu cầu ({current_cau_str}) → Dự đoán theo xí ngầu"
-            elif not md5_rule_applied:
-                ly_do = "AI Dự đoán theo xí ngầu (chưa đủ lịch sử cầu)"
-
-
-            # Cập nhật độ tin cậy của mẫu cầu dựa trên kết quả thực tế
-            if len(tx_history) == TX_HISTORY_LENGTH:
-                prediction_correct = (du_doan_cuoi_cung == "Tài" and ket_qua_tx == "Tài") or \
-                                     (du_doan_cuoi_cung == "Xỉu" and ket_qua_tx == "Xỉu")
-                update_cau_patterns(current_cau_str, prediction_correct)
+                    ly_do = f"AI Không rõ mẫu cầu ({current_cau}) → Dự đoán theo xí ngầu"
+            
+            # Cập nhật mẫu cầu dựa trên kết quả thực tế
+            if len(tx_history) >= 5:
+                prediction_correct = (du_doan == "Tài" and ket_qua_tx == "Tài") or \
+                                     (du_doan == "Xỉu" and ket_qua_tx == "Xỉu")
+                update_cau_patterns(current_cau, prediction_correct)
 
             # Gửi tin nhắn dự đoán tới tất cả người dùng có quyền truy cập
             for user_id_str, user_info in list(user_data.items()): # Dùng list() để tránh lỗi khi user_data thay đổi
@@ -333,30 +256,31 @@ def prediction_loop(stop_event: Event):
                     try:
                         prediction_message = (
                             "🎮 **KẾT QUẢ PHIÊN HIỆN TẠI** 🎮\n"
-                            f"Phiên: `{expect}` | Kết quả: **{ket_qua_tx}** (Tổng: **{tong}**)\n"
-                            f"Kết quả MD5: `{md5_outcome}`\n\n" # Hiển thị kết quả MD5
+                            f"Phiên: `{expect}` | Kết quả: **{ket_qua_tx}** (Tổng: **{tong}**)\n\n"
                             f"**Dự đoán cho phiên tiếp theo:**\n"
                             f"🔢 Phiên: `{next_expect}`\n"
-                            f"🤖 Dự đoán: **{du_doan_cuoi_cung}**\n"
+                            f"🤖 Dự đoán: **{du_doan}**\n"
                             f"📌 Lý do: _{ly_do}_\n"
                             f"⚠️ **Hãy đặt cược sớm trước khi phiên kết thúc!**"
                         )
                         bot.send_message(user_id, prediction_message, parse_mode='Markdown')
                     except telebot.apihelper.ApiTelegramException as e:
                         if "bot was blocked by the user" in str(e) or "user is deactivated" in str(e):
-                            # print(f"Người dùng {user_id} đã chặn bot hoặc bị vô hiệu hóa.")
-                            pass
+                            print(f"Người dùng {user_id} đã chặn bot hoặc bị vô hiệu hóa. Có thể xóa khỏi danh sách theo dõi.")
+                            # Optional: Remove user from user_data if blocked
+                            # del user_data[user_id_str] 
+                            # save_user_data(user_data)
                         else:
                             print(f"Lỗi gửi tin nhắn cho user {user_id}: {e}")
                     except Exception as e:
                         print(f"Lỗi không xác định khi gửi tin nhắn cho user {user_id}: {e}")
 
             print("-" * 50)
-            print("🎮 Kết quả phiên hiện tại: {} (Tổng: {}), MD5: {}".format(ket_qua_tx, tong, md5_outcome))
+            print("🎮 Kết quả phiên hiện tại: {} (Tổng: {})".format(ket_qua_tx, tong))
             print("🔢 Phiên: {} → {}".format(expect, next_expect))
-            print("🤖 Dự đoán: {}".format(du_doan_cuoi_cung))
+            print("🤖 Dự đoán: {}".format(du_doan))
             print("📌 Lý do: {}".format(ly_do))
-            print("Lịch sử TX: {}. Lịch sử MD5: {}".format(''.join(tx_history), md5_results_history))
+            print("⚠️ Hãy đặt cược sớm trước khi phiên kết thúc!")
             print("-" * 50)
 
             last_id = issue_id
@@ -495,38 +419,23 @@ def start_prediction_command(message):
     bot.reply_to(message, "✅ Bạn đang có quyền truy cập. Bot sẽ tự động gửi dự đoán các phiên mới nhất tại đây.")
 
 @bot.message_handler(commands=['maucau'])
-def show_cau_patterns_command(message):
+def show_cau_patterns(message):
     if not is_ctv(message.chat.id): # Chỉ Admin/CTV mới được xem mẫu cầu chi tiết
         bot.reply_to(message, "Bạn không có quyền sử dụng lệnh này.")
         return
 
-    if not CAU_PATTERNS:
-        pattern_text = "📚 **CÁC MẪU CẦU ĐÃ THU THUẬT** 📚\n\nKhông có mẫu cầu nào được thu thập."
-    else:
-        sorted_patterns = sorted(CAU_PATTERNS.items(), key=lambda item: item[1], reverse=True)
-        dep_patterns_list = []
-        xau_patterns_list = []
+    dep_patterns = "\n".join(sorted(list(CAU_DEP))) if CAU_DEP else "Không có"
+    xau_patterns = "\n".join(sorted(list(CAU_XAU))) if CAU_XAU else "Không có"
 
-        for pattern, confidence in sorted_patterns:
-            if confidence >= 2.5: # Ngưỡng "đẹp"
-                dep_patterns_list.append(f"{pattern} ({confidence:.2f})")
-            elif confidence <= 0.5: # Ngưỡng "xấu"
-                xau_patterns_list.append(f"{pattern} ({confidence:.2f})")
-            # Các mẫu ở giữa không rõ ràng thì không liệt kê vào đây
-
-        dep_patterns_str = "\n".join(dep_patterns_list) if dep_patterns_list else "Không có"
-        xau_patterns_str = "\n".join(xau_patterns_list) if xau_patterns_list else "Không có"
-
-        pattern_text = (
-            "📚 **CÁC MẪU CẦU ĐÃ THU THUẬT** 📚\n\n"
-            "**🟢 Cầu Đẹp (Confidence >= 2.5):**\n"
-            f"```\n{dep_patterns_str}\n```\n\n"
-            "**🔴 Cầu Xấu (Confidence <= 0.5):**\n"
-            f"```\n{xau_patterns_str}\n```\n"
-            "*(Các mẫu cầu này được bot tự động học hỏi theo thời gian. Số trong ngoặc là điểm tin cậy)*"
-        )
+    pattern_text = (
+        "📚 **CÁC MẪU CẦU ĐÃ THU THẬP** 📚\n\n"
+        "**🟢 Cầu Đẹp:**\n"
+        f"```\n{dep_patterns}\n```\n\n"
+        "**🔴 Cầu Xấu:**\n"
+        f"```\n{xau_patterns}\n```\n"
+        "*(Các mẫu cầu này được bot tự động học hỏi theo thời gian.)*"
+    )
     bot.reply_to(message, pattern_text, parse_mode='Markdown')
-
 
 @bot.message_handler(commands=['code'])
 def use_code(message):
@@ -605,7 +514,7 @@ def get_user_info(message):
     is_ctv_status = "Có" if is_ctv(int(target_user_id_str)) else "Không"
 
     info_text = (
-        f"**THÔNG TIN NGƯỜNG DÙNG**\n"
+        f"**THÔNG TIN NGƯỜI DÙNG**\n"
         f"**ID:** `{target_user_id_str}`\n"
         f"**Tên:** @{username}\n"
         f"**Ngày hết hạn:** `{expiry_date_str}`\n"
@@ -667,8 +576,7 @@ def extend_subscription(message):
                          parse_mode='Markdown')
     except telebot.apihelper.ApiTelegramException as e:
         if "bot was blocked by the user" in str(e):
-            # print(f"Không thể thông báo gia hạn cho user {target_user_id_str}: Người dùng đã chặn bot.")
-            pass
+            print(f"Không thể thông báo gia hạn cho user {target_user_id_str}: Người dùng đã chặn bot.")
         else:
             print(f"Không thể thông báo gia hạn cho user {target_user_id_str}: {e}")
 
@@ -743,15 +651,15 @@ def send_broadcast(message):
             success_count += 1
             time.sleep(0.1) # Tránh bị rate limit
         except telebot.apihelper.ApiTelegramException as e:
-            # print(f"Không thể gửi thông báo cho user {user_id_str}: {e}")
+            print(f"Không thể gửi thông báo cho user {user_id_str}: {e}")
             fail_count += 1
             if "bot was blocked by the user" in str(e) or "user is deactivated" in str(e):
-                # print(f"Người dùng {user_id_str} đã chặn bot hoặc bị vô hiệu hóa. Có thể xóa khỏi user_data.")
-                pass
+                print(f"Người dùng {user_id_str} đã chặn bot hoặc bị vô hiệu hóa. Có thể xóa khỏi user_data.")
+                # Optional: del user_data[user_id_str] 
         except Exception as e:
             print(f"Lỗi không xác định khi gửi thông báo cho user {user_id_str}: {e}")
             fail_count += 1
-                
+            
     bot.reply_to(message, f"Đã gửi thông báo đến {success_count} người dùng. Thất bại: {fail_count}.")
     save_user_data(user_data) # Lưu lại nếu có user bị xóa
 
@@ -772,6 +680,13 @@ def disable_bot_command(message):
     bot_disable_admin_id = message.chat.id
     bot.reply_to(message, f"✅ Bot dự đoán đã được tắt bởi Admin `{message.from_user.username or message.from_user.first_name}`.\nLý do: `{reason}`", parse_mode='Markdown')
     
+    # Optionally notify all users
+    # for user_id_str in list(user_data.keys()):
+    #     try:
+    #         bot.send_message(int(user_id_str), f"📢 **THÔNG BÁO QUAN TRỌNG:** Bot dự đoán tạm thời dừng hoạt động.\nLý do: {reason}\nVui lòng chờ thông báo mở lại.", parse_mode='Markdown')
+    #     except Exception:
+    #         pass
+
 @bot.message_handler(commands=['mokbot'])
 def enable_bot_command(message):
     global bot_enabled, bot_disable_reason, bot_disable_admin_id
@@ -788,6 +703,13 @@ def enable_bot_command(message):
     bot_disable_admin_id = None
     bot.reply_to(message, "✅ Bot dự đoán đã được mở lại bởi Admin.")
     
+    # Optionally notify all users
+    # for user_id_str in list(user_data.keys()):
+    #     try:
+    #         bot.send_message(int(user_id_str), "🎉 **THÔNG BÁO:** Bot dự đoán đã hoạt động trở lại!.", parse_mode='Markdown')
+    #     except Exception:
+    #         pass
+
 @bot.message_handler(commands=['taocode'])
 def generate_code_command(message):
     if not is_admin(message.chat.id):
