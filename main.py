@@ -5,6 +5,7 @@ import json
 import os
 import random
 import string
+import sys # Import sys for stdout.flush for immediate log output
 from datetime import datetime, timedelta
 from threading import Thread, Event, Lock
 
@@ -46,16 +47,26 @@ def load_user_data():
         with open(DATA_FILE, 'r') as f:
             try:
                 user_data = json.load(f)
+                print(f"DEBUG: Tải {len(user_data)} bản ghi người dùng từ {DATA_FILE}")
             except json.JSONDecodeError:
-                print(f"Lỗi đọc {DATA_FILE}. Khởi tạo lại dữ liệu người dùng.")
+                print(f"LỖI: Lỗi đọc {DATA_FILE}. Khởi tạo lại dữ liệu người dùng.")
+                user_data = {}
+            except Exception as e:
+                print(f"LỖI: Lỗi không xác định khi tải {DATA_FILE}: {e}")
                 user_data = {}
     else:
         user_data = {}
-    print(f"Loaded {len(user_data)} user records from {DATA_FILE}")
+        print(f"DEBUG: File {DATA_FILE} không tồn tại. Khởi tạo dữ liệu người dùng rỗng.")
+    sys.stdout.flush()
 
 def save_user_data(data):
-    with open(DATA_FILE, 'w') as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(DATA_FILE, 'w') as f:
+            json.dump(data, f, indent=4)
+        # print(f"DEBUG: Đã lưu {len(data)} bản ghi người dùng vào {DATA_FILE}")
+    except Exception as e:
+        print(f"LỖI: Không thể lưu dữ liệu người dùng vào {DATA_FILE}: {e}")
+    sys.stdout.flush()
 
 def load_cau_patterns():
     global CAU_XAU, CAU_DEP
@@ -65,18 +76,29 @@ def load_cau_patterns():
                 data = json.load(f)
                 CAU_DEP.update(data.get('dep', []))
                 CAU_XAU.update(data.get('xau', []))
+                print(f"DEBUG: Tải {len(CAU_DEP)} mẫu cầu đẹp và {len(CAU_XAU)} mẫu cầu xấu từ {CAU_PATTERNS_FILE}")
             except json.JSONDecodeError:
-                print(f"Lỗi đọc {CAU_PATTERNS_FILE}. Khởi tạo lại mẫu cầu.")
+                print(f"LỖI: Lỗi đọc {CAU_PATTERNS_FILE}. Khởi tạo lại mẫu cầu.")
+                CAU_DEP = set()
+                CAU_XAU = set()
+            except Exception as e:
+                print(f"LỖI: Lỗi không xác định khi tải {CAU_PATTERNS_FILE}: {e}")
                 CAU_DEP = set()
                 CAU_XAU = set()
     else:
         CAU_DEP = set()
         CAU_XAU = set()
-    print(f"Loaded {len(CAU_DEP)} dep patterns and {len(CAU_XAU)} xau patterns.")
+        print(f"DEBUG: File {CAU_PATTERNS_FILE} không tồn tại. Khởi tạo mẫu cầu rỗng.")
+    sys.stdout.flush()
 
 def save_cau_patterns():
-    with open(CAU_PATTERNS_FILE, 'w') as f:
-        json.dump({'dep': list(CAU_DEP), 'xau': list(CAU_XAU)}, f, indent=4)
+    try:
+        with open(CAU_PATTERNS_FILE, 'w') as f:
+            json.dump({'dep': list(CAU_DEP), 'xau': list(CAU_XAU)}, f, indent=4)
+        # print(f"DEBUG: Đã lưu mẫu cầu: Cầu đẹp: {len(CAU_DEP)}, Cầu xấu: {len(CAU_XAU)}")
+    except Exception as e:
+        print(f"LỖI: Không thể lưu mẫu cầu vào {CAU_PATTERNS_FILE}: {e}")
+    sys.stdout.flush()
 
 def load_codes():
     global GENERATED_CODES
@@ -84,16 +106,26 @@ def load_codes():
         with open(CODES_FILE, 'r') as f:
             try:
                 GENERATED_CODES = json.load(f)
+                print(f"DEBUG: Tải {len(GENERATED_CODES)} mã code từ {CODES_FILE}")
             except json.JSONDecodeError:
-                print(f"Lỗi đọc {CODES_FILE}. Khởi tạo lại mã code.")
+                print(f"LỖI: Lỗi đọc {CODES_FILE}. Khởi tạo lại mã code.")
+                GENERATED_CODES = {}
+            except Exception as e:
+                print(f"LỖI: Lỗi không xác định khi tải {CODES_FILE}: {e}")
                 GENERATED_CODES = {}
     else:
         GENERATED_CODES = {}
-    print(f"Loaded {len(GENERATED_CODES)} codes from {CODES_FILE}")
+        print(f"DEBUG: File {CODES_FILE} không tồn tại. Khởi tạo mã code rỗng.")
+    sys.stdout.flush()
 
 def save_codes():
-    with open(CODES_FILE, 'w') as f:
-        json.dump(GENERATED_CODES, f, indent=4)
+    try:
+        with open(CODES_FILE, 'w') as f:
+            json.dump(GENERATED_CODES, f, indent=4)
+        # print(f"DEBUG: Đã lưu {len(GENERATED_CODES)} mã code vào {CODES_FILE}")
+    except Exception as e:
+        print(f"LỖI: Không thể lưu mã code vào {CODES_FILE}: {e}")
+    sys.stdout.flush()
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
@@ -151,12 +183,14 @@ def update_cau_patterns(new_cau, prediction_correct):
         CAU_DEP.add(new_cau)
         if new_cau in CAU_XAU:
             CAU_XAU.remove(new_cau)
+            print(f"DEBUG: Xóa mẫu cầu '{new_cau}' khỏi cầu xấu.")
     else:
         CAU_XAU.add(new_cau)
         if new_cau in CAU_DEP:
             CAU_DEP.remove(new_cau)
+            print(f"DEBUG: Xóa mẫu cầu '{new_cau}' khỏi cầu đẹp.")
     save_cau_patterns()
-    # print(f"Đã cập nhật mẫu cầu: Cầu đẹp: {len(CAU_DEP)}, Cầu xấu: {len(CAU_XAU)}")
+    sys.stdout.flush()
 
 def is_cau_xau(cau_str):
     return cau_str in CAU_XAU
@@ -167,18 +201,36 @@ def is_cau_dep(cau_str):
 # --- Lấy dữ liệu từ API ---
 def lay_du_lieu():
     try:
-        response = requests.get("https://1.bot/GetNewLottery/LT_Taixiu")
-        response.raise_for_status() # Báo lỗi nếu status code là lỗi HTTP
+        response = requests.get("https://1.bot/GetNewLottery/LT_Taixiu", timeout=10) # Thêm timeout
+        response.raise_for_status() # Báo lỗi nếu status code là lỗi HTTP (4xx, 5xx)
         data = response.json()
         if data.get("state") != 1:
-            # print(f"API trả về state không thành công: {data.get('state')}")
+            print(f"DEBUG: API trả về state không thành công: {data.get('state')} cho {response.url}. Phản hồi đầy đủ: {data}")
+            sys.stdout.flush()
             return None
+        print(f"DEBUG: Data fetched from API ({response.url}): {data}")
+        sys.stdout.flush()
         return data.get("data")
+    except requests.exceptions.Timeout:
+        print(f"LỖI: Hết thời gian chờ khi lấy dữ liệu từ API: {response.url}")
+        sys.stdout.flush()
+        return None
+    except requests.exceptions.ConnectionError as e:
+        print(f"LỖI: Lỗi kết nối khi lấy dữ liệu từ API: {response.url} - {e}")
+        sys.stdout.flush()
+        return None
     except requests.exceptions.RequestException as e:
-        print(f"Lỗi khi lấy dữ liệu từ API: {e}")
+        print(f"LỖI: Lỗi HTTP hoặc Request khác khi lấy dữ liệu từ API: {response.url} - {e}")
+        sys.stdout.flush()
         return None
     except json.JSONDecodeError:
-        print("Lỗi giải mã JSON từ API. Phản hồi không phải JSON hợp lệ.")
+        print(f"LỖI: Lỗi giải mã JSON từ API ({response.url}). Phản hồi không phải JSON hợp lệ hoặc trống.")
+        print(f"DEBUG: Phản hồi thô nhận được: {response.text}")
+        sys.stdout.flush()
+        return None
+    except Exception as e:
+        print(f"LỖI: Lỗi không xác định khi lấy dữ liệu API ({response.url}): {e}")
+        sys.stdout.flush()
         return None
 
 # --- Logic chính của Bot dự đoán (chạy trong luồng riêng) ---
@@ -186,16 +238,20 @@ def prediction_loop(stop_event: Event):
     last_id = None
     tx_history = []
     
-    print("Prediction loop started.")
+    print("LOG: Luồng dự đoán đã khởi động.")
+    sys.stdout.flush()
+
     while not stop_event.is_set():
         if not bot_enabled:
-            # print(f"Bot dự đoán đang tạm dừng. Lý do: {bot_disable_reason}")
+            print(f"LOG: Bot dự đoán đang tạm dừng. Lý do: {bot_disable_reason}")
+            sys.stdout.flush()
             time.sleep(10) # Ngủ lâu hơn khi bot bị tắt
             continue
 
         data = lay_du_lieu()
         if not data:
-            # print("❌ Không lấy được dữ liệu từ API hoặc dữ liệu không hợp lệ.")
+            print("LOG: ❌ Không lấy được dữ liệu từ API hoặc dữ liệu không hợp lệ. Đang chờ phiên mới...")
+            sys.stdout.flush()
             time.sleep(5)
             continue
 
@@ -204,16 +260,26 @@ def prediction_loop(stop_event: Event):
         open_code = data.get("OpenCode")
 
         if not all([issue_id, expect, open_code]):
-            # print("Dữ liệu API không đầy đủ (thiếu ID, Expect, hoặc OpenCode). Bỏ qua phiên này.")
+            print(f"LOG: Dữ liệu API không đầy đủ (thiếu ID, Expect, hoặc OpenCode) cho phiên {expect}. Bỏ qua phiên này. Dữ liệu: {data}")
+            sys.stdout.flush()
             time.sleep(5)
             continue
 
         if issue_id != last_id:
             try:
                 dice = tuple(map(int, open_code.split(",")))
-            except ValueError:
-                print(f"Lỗi phân tích OpenCode: '{open_code}'. Bỏ qua phiên này.")
-                last_id = issue_id # Vẫn cập nhật last_id để không lặp lại lỗi
+                if len(dice) != 3: # Đảm bảo có đúng 3 xúc xắc
+                    raise ValueError("OpenCode không chứa 3 giá trị xúc xắc.")
+            except ValueError as e:
+                print(f"LỖI: Lỗi phân tích OpenCode: '{open_code}'. {e}. Bỏ qua phiên này.")
+                sys.stdout.flush()
+                last_id = issue_id # Vẫn cập nhật last_id để không lặp lại lỗi phiên lỗi này
+                time.sleep(5)
+                continue
+            except Exception as e:
+                print(f"LỖI: Lỗi không xác định khi xử lý OpenCode '{open_code}': {e}. Bỏ qua phiên này.")
+                sys.stdout.flush()
+                last_id = issue_id
                 time.sleep(5)
                 continue
             
@@ -247,6 +313,9 @@ def prediction_loop(stop_event: Event):
                 prediction_correct = (du_doan == "Tài" and ket_qua_tx == "Tài") or \
                                      (du_doan == "Xỉu" and ket_qua_tx == "Xỉu")
                 update_cau_patterns(current_cau, prediction_correct)
+                print(f"DEBUG: Cập nhật mẫu cầu: '{current_cau}' - Chính xác: {prediction_correct}")
+                sys.stdout.flush()
+
 
             # Gửi tin nhắn dự đoán tới tất cả người dùng có quyền truy cập
             for user_id_str, user_info in list(user_data.items()): # Dùng list() để tránh lỗi khi user_data thay đổi
@@ -264,29 +333,32 @@ def prediction_loop(stop_event: Event):
                             f"⚠️ **Hãy đặt cược sớm trước khi phiên kết thúc!**"
                         )
                         bot.send_message(user_id, prediction_message, parse_mode='Markdown')
+                        print(f"DEBUG: Đã gửi dự đoán cho user {user_id_str}")
+                        sys.stdout.flush()
                     except telebot.apihelper.ApiTelegramException as e:
+                        print(f"LỖI: Lỗi Telegram API khi gửi tin nhắn cho user {user_id}: {e}")
+                        sys.stdout.flush()
                         if "bot was blocked by the user" in str(e) or "user is deactivated" in str(e):
-                            print(f"Người dùng {user_id} đã chặn bot hoặc bị vô hiệu hóa. Có thể xóa khỏi danh sách theo dõi.")
-                            # Optional: Remove user from user_data if blocked
-                            # del user_data[user_id_str] 
-                            # save_user_data(user_data)
-                        else:
-                            print(f"Lỗi gửi tin nhắn cho user {user_id}: {e}")
+                            print(f"CẢNH BÁO: Người dùng {user_id} đã chặn bot hoặc bị vô hiệu hóa. Có thể xem xét xóa khỏi danh sách.")
+                            sys.stdout.flush()
+                            # Optional: Uncomment to remove user from user_data if blocked
+                            # if user_id_str in user_data:
+                            #     del user_data[user_id_str] 
+                            #     save_user_data(user_data)
                     except Exception as e:
-                        print(f"Lỗi không xác định khi gửi tin nhắn cho user {user_id}: {e}")
+                        print(f"LỖI: Lỗi không xác định khi gửi tin nhắn cho user {user_id}: {e}")
+                        sys.stdout.flush()
 
             print("-" * 50)
-            print("🎮 Kết quả phiên hiện tại: {} (Tổng: {})".format(ket_qua_tx, tong))
-            print("🔢 Phiên: {} → {}".format(expect, next_expect))
-            print("🤖 Dự đoán: {}".format(du_doan))
-            print("📌 Lý do: {}".format(ly_do))
-            print("⚠️ Hãy đặt cược sớm trước khi phiên kết thúc!")
+            print("LOG: Phiên {} -> {}. Kết quả: {} ({}). Dự đoán: {}. Lý do: {}".format(expect, next_expect, ket_qua_tx, tong, du_doan, ly_do))
             print("-" * 50)
+            sys.stdout.flush()
 
             last_id = issue_id
 
         time.sleep(5) # Đợi 5 giây trước khi kiểm tra phiên mới
-    print("Prediction loop stopped.")
+    print("LOG: Luồng dự đoán đã dừng.")
+    sys.stdout.flush()
 
 # --- Xử lý lệnh Telegram ---
 
@@ -484,7 +556,7 @@ def use_code(message):
 
     bot.reply_to(message, 
                  f"🎉 Bạn đã đổi mã code thành công! Tài khoản của bạn đã được gia hạn thêm **{value} {code_info['type']}**.\n"
-                 f"Ngày hết hạn mới: `{user_expiry_date(user_id)}`", 
+                 f"Ngày hết hạn mới: `{user_data[user_id]['expiry_date']}`", 
                  parse_mode='Markdown')
 
 def user_expiry_date(user_id):
@@ -576,9 +648,10 @@ def extend_subscription(message):
                          parse_mode='Markdown')
     except telebot.apihelper.ApiTelegramException as e:
         if "bot was blocked by the user" in str(e):
-            print(f"Không thể thông báo gia hạn cho user {target_user_id_str}: Người dùng đã chặn bot.")
+            print(f"CẢNH BÁO: Không thể thông báo gia hạn cho user {target_user_id_str}: Người dùng đã chặn bot.")
         else:
-            print(f"Không thể thông báo gia hạn cho user {target_user_id_str}: {e}")
+            print(f"LỖI: Không thể thông báo gia hạn cho user {target_user_id_str}: {e}")
+        sys.stdout.flush()
 
 # --- Lệnh Admin Chính ---
 @bot.message_handler(commands=['ctv'])
@@ -651,13 +724,16 @@ def send_broadcast(message):
             success_count += 1
             time.sleep(0.1) # Tránh bị rate limit
         except telebot.apihelper.ApiTelegramException as e:
-            print(f"Không thể gửi thông báo cho user {user_id_str}: {e}")
+            print(f"LỖI: Không thể gửi thông báo cho user {user_id_str}: {e}")
+            sys.stdout.flush()
             fail_count += 1
             if "bot was blocked by the user" in str(e) or "user is deactivated" in str(e):
-                print(f"Người dùng {user_id_str} đã chặn bot hoặc bị vô hiệu hóa. Có thể xóa khỏi user_data.")
+                print(f"CẢNH BÁO: Người dùng {user_id_str} đã chặn bot hoặc bị vô hiệu hóa. Có thể xem xét xóa khỏi user_data.")
+                sys.stdout.flush()
                 # Optional: del user_data[user_id_str] 
         except Exception as e:
-            print(f"Lỗi không xác định khi gửi thông báo cho user {user_id_str}: {e}")
+            print(f"LỖI: Lỗi không xác định khi gửi thông báo cho user {user_id_str}: {e}")
+            sys.stdout.flush()
             fail_count += 1
             
     bot.reply_to(message, f"Đã gửi thông báo đến {success_count} người dùng. Thất bại: {fail_count}.")
@@ -679,6 +755,7 @@ def disable_bot_command(message):
     bot_disable_reason = reason
     bot_disable_admin_id = message.chat.id
     bot.reply_to(message, f"✅ Bot dự đoán đã được tắt bởi Admin `{message.from_user.username or message.from_user.first_name}`.\nLý do: `{reason}`", parse_mode='Markdown')
+    sys.stdout.flush()
     
     # Optionally notify all users
     # for user_id_str in list(user_data.keys()):
@@ -702,6 +779,7 @@ def enable_bot_command(message):
     bot_disable_reason = "Không có"
     bot_disable_admin_id = None
     bot.reply_to(message, "✅ Bot dự đoán đã được mở lại bởi Admin.")
+    sys.stdout.flush()
     
     # Optionally notify all users
     # for user_id_str in list(user_data.keys()):
@@ -776,7 +854,8 @@ def start_bot_threads():
     global bot_initialized
     with bot_init_lock:
         if not bot_initialized:
-            print("Initializing bot and prediction threads...")
+            print("LOG: Đang khởi tạo luồng bot và dự đoán...")
+            sys.stdout.flush()
             # Load initial data
             load_user_data()
             load_cau_patterns()
@@ -784,25 +863,31 @@ def start_bot_threads():
 
             # Start prediction loop in a separate thread
             prediction_thread = Thread(target=prediction_loop, args=(prediction_stop_event,))
-            prediction_thread.daemon = True
+            prediction_thread.daemon = True # Đặt daemon = True để luồng tự động kết thúc khi chương trình chính kết thúc
             prediction_thread.start()
-            print("Prediction loop thread started.")
+            print("LOG: Luồng dự đoán đã khởi động.")
+            sys.stdout.flush()
 
             # Start bot polling in a separate thread
             # Use bot.infinity_polling() for robust polling
             polling_thread = Thread(target=bot.infinity_polling, kwargs={'none_stop': True})
-            polling_thread.daemon = True
+            polling_thread.daemon = True # Đặt daemon = True
             polling_thread.start()
-            print("Telegram bot polling thread started.")
+            print("LOG: Luồng Telegram bot polling đã khởi động.")
+            sys.stdout.flush()
             
             bot_initialized = True
 
 # --- Điểm khởi chạy chính cho Gunicorn/Render ---
 if __name__ == '__main__':
-    # When running locally, ensure threads are started
-    # For Render, gunicorn will call the Flask app, and @app.before_request will handle initialization
-    # No need to call app.run() directly if Gunicorn is used as main entry point
+    # Khi chạy cục bộ, Flask sẽ xử lý việc khởi tạo qua app.run()
+    # Khi triển khai trên Render/Heroku với Gunicorn, Gunicorn sẽ gọi Flask app,
+    # và @app.before_request sẽ tự động xử lý việc khởi tạo các luồng.
+    # Không cần gọi app.run() trực tiếp nếu Gunicorn được sử dụng làm điểm khởi đầu chính
     port = int(os.environ.get('PORT', 5000))
-    print(f"Starting Flask app locally on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=True)
+    print(f"LOG: Khởi động Flask app trên cổng {port}")
+    sys.stdout.flush()
+    # Đặt debug=False khi triển khai thực tế để tăng hiệu suất và bảo mật
+    # debug=True chỉ nên dùng khi phát triển cục bộ để xem lỗi chi tiết trên console
+    app.run(host='0.0.0.0', port=port, debug=False)
 
