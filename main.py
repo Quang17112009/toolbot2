@@ -17,9 +17,8 @@ BOT_TOKEN = "7630248769:AAG36CSLxWWovAfa-Byjh_DohcpN3pA94Iw"
 ADMIN_IDS = [6915752059] # Ví dụ: [6915752059, 123456789]
 
 DATA_FILE = 'user_data.json'
-CAU_PATTERNS_FILE = 'cau_patterns.json'
+CAU_PATTERNS_FILE = 'cau_patterns.json' # Vẫn giữ file này cho mục đích học hỏi, dù lệnh /maucau bị xóa
 CODES_FILE = 'codes.json'
-STATS_FILE = 'stats.json' # File mới để lưu thống kê
 
 # --- Cấu hình nâng cao ---
 TX_HISTORY_LENGTH_LEARN = 200 # Chiều dài lịch sử phiên để học hỏi tổng thể
@@ -43,7 +42,7 @@ user_data = {}
 CAU_PATTERNS = {} # {pattern_string: confidence_score (float)}
 GENERATED_CODES = {} # {code: {"value": 1, "type": "day", "used_by": null, "used_time": null}}
 tx_full_history = [] # Sẽ lưu chi tiết 200 phiên gần nhất
-prediction_stats = {'correct': 0, 'wrong': 0, 'total': 0} # Thống kê dự đoán
+prediction_stats = {'correct': 0, 'wrong': 0} # Thống kê dự đoán
 
 # --- Quản lý dữ liệu người dùng, mẫu cầu và code ---
 def load_user_data():
@@ -96,23 +95,6 @@ def load_codes():
 def save_codes():
     with open(CODES_FILE, 'w') as f:
         json.dump(GENERATED_CODES, f, indent=4)
-
-def load_prediction_stats():
-    global prediction_stats
-    if os.path.exists(STATS_FILE):
-        with open(STATS_FILE, 'r') as f:
-            try:
-                prediction_stats = json.load(f)
-            except json.JSONDecodeError:
-                print(f"Lỗi đọc {STATS_FILE}. Khởi tạo lại thống kê dự đoán.")
-                prediction_stats = {'correct': 0, 'wrong': 0, 'total': 0}
-    else:
-        prediction_stats = {'correct': 0, 'wrong': 0, 'total': 0}
-    print(f"Loaded prediction stats: {prediction_stats}")
-
-def save_prediction_stats():
-    with open(STATS_FILE, 'w') as f:
-        json.dump(prediction_stats, f, indent=4)
 
 def is_admin(user_id):
     return user_id in ADMIN_IDS
@@ -459,22 +441,19 @@ def prediction_loop(stop_event: Event):
             next_expect = str(int(expect) + 1).zfill(len(expect))
             du_doan_cuoi_cung, ly_do = smart_predict(tx_full_history, analyze_history_for_predict, dice)
 
-            # --- Cập nhật thống kê dự đoán ---
-            prediction_stats['total'] += 1
-            if du_doan_cuoi_cung == ket_qua_tx:
-                prediction_stats['correct'] += 1
-            else:
-                prediction_stats['wrong'] += 1
-            save_prediction_stats() # Lưu thống kê sau mỗi lần cập nhật
-
-
             # Cập nhật độ tin cậy của mẫu cầu (sử dụng 7 phiên gần nhất từ analyze_history_for_predict)
             # Dù có logic smart_predict mới, vẫn duy trì việc học mẫu cầu 7 phiên
             if len(analyze_history_for_predict) >= 7:
                 current_cau_str_for_pattern = ''.join(["T" if p['result'] == "Tài" else "X" for p in analyze_history_for_predict[:7]])
-                prediction_correct = (du_doan_cuoi_cung == "Tài" and ket_qua_tx == "Tài") or \
-                                     (du_doan_cuoi_cung == "Xỉu" and ket_qua_tx == "Xỉu")
+                prediction_correct = (du_doan_cuoi_cung == ket_qua_tx)
                 update_cau_patterns(current_cau_str_for_pattern, prediction_correct)
+                
+                # Cập nhật thống kê dự đoán
+                if prediction_correct:
+                    prediction_stats['correct'] += 1
+                else:
+                    prediction_stats['wrong'] += 1
+
 
             # Gửi tin nhắn dự đoán tới tất cả người dùng có quyền truy cập
             for user_id_str, user_info in list(user_data.items()): # Dùng list() để tránh lỗi khi user_data thay đổi
@@ -555,22 +534,21 @@ def show_help(message):
     
     if is_ctv(message.chat.id):
         help_text += (
-            "**Lệnh CTV:**\n"
+            "**Lệnh Admin/CTV:**\n"
+            "🔹 `/full <id>`: Xem thông tin người dùng (để trống ID để xem của bạn).\n"
             "🔹 `/giahan <id> <số ngày/giờ>`: Gia hạn tài khoản người dùng. Ví dụ: `/giahan 12345 1 ngày` hoặc `/giahan 12345 24 giờ`.\n\n"
         )
     
-    if is_admin(message.chat.id):
+    if is_admin(message.chat.id): # Chỉ Admin mới nhìn thấy các lệnh này
         help_text += (
-            "**Lệnh Admin:**\n"
-            "👑 `/full <id>`: Xem thông tin người dùng (để trống ID để xem của bạn).\n"
-            "👑 `/giahan <id> <số ngày/giờ>`: Gia hạn tài khoản người dùng. Ví dụ: `/giahan 12345 1 ngày` hoặc `/giahan 12345 24 giờ`.\n"
+            "**Lệnh Admin Chính:**\n"
             "👑 `/ctv <id>`: Thêm người dùng làm CTV.\n"
             "👑 `/xoactv <id>`: Xóa người dùng khỏi CTV.\n"
             "👑 `/tb <nội dung>`: Gửi thông báo đến tất cả người dùng.\n"
             "👑 `/tatbot <lý do>`: Tắt mọi hoạt động của bot dự đoán.\n"
             "👑 `/mokbot`: Mở lại hoạt động của bot dự đoán.\n"
             "👑 `/taocode <giá trị> <ngày/giờ> <số lượng>`: Tạo mã code gia hạn. Ví dụ: `/taocode 1 ngày 5` (tạo 5 code 1 ngày).\n"
-            "👑 `/thongke`: Xem thống kê dự đoán đúng/sai của bot.\n"
+            "👑 `/thongke`: Xem thống kê dự đoán của bot (đúng/sai).\n"
         )
     
     bot.reply_to(message, help_text, parse_mode='Markdown')
@@ -578,7 +556,8 @@ def show_help(message):
 @bot.message_handler(commands=['support'])
 def show_support(message):
     bot.reply_to(message, 
-        "Để được hỗ trợ, vui lòng liên hệ Admin: @nhutquangdz"
+        "Để được hỗ trợ, vui lòng liên hệ Admin:\n"
+        "@nhutquangdz"
     )
 
 @bot.message_handler(commands=['gia'])
@@ -591,7 +570,7 @@ def show_price(message):
         "💸 **130k**: 1 Tháng\n\n"
         "🤖 BOT LUCKYWIn TỈ Lệ **85-92%**\n"
         "⏱️ ĐỌC 24/24\n\n"
-        "Vui Lòng ib @nhutquangdz Để Gia Hạn"
+        "Vui Lòng ib @heheviptool hoặc @Besttaixiu999 Để Gia Hạn"
     )
     bot.reply_to(message, price_text, parse_mode='Markdown')
 
@@ -686,7 +665,7 @@ def user_expiry_date(user_id):
 # --- Lệnh Admin/CTV ---
 @bot.message_handler(commands=['full'])
 def get_user_info(message):
-    if not is_admin(message.chat.id): # Chỉ Admin mới dùng được /full
+    if not is_ctv(message.chat.id):
         bot.reply_to(message, "Bạn không có quyền sử dụng lệnh này.")
         return
     
@@ -939,24 +918,24 @@ def generate_code_command(message):
         bot.reply_to(message, f"Đã xảy ra lỗi khi tạo code: {e}", parse_mode='Markdown')
 
 @bot.message_handler(commands=['thongke'])
-def show_prediction_stats(message):
+def show_statistics(message):
     if not is_admin(message.chat.id):
         bot.reply_to(message, "Bạn không có quyền sử dụng lệnh này.")
         return
     
-    total = prediction_stats['total']
-    correct = prediction_stats['correct']
-    wrong = prediction_stats['wrong']
+    total_predictions = prediction_stats['correct'] + prediction_stats['wrong']
     
-    accuracy = (correct / total * 100) if total > 0 else 0.0
-
-    stats_text = (
-        "📊 **THỐNG KÊ DỰ ĐOÁN CỦA BOT** 📊\n\n"
-        f"Tổng số lần dự đoán: **{total}**\n"
-        f"Số lần dự đoán đúng: **{correct}**\n"
-        f"Số lần dự đoán sai: **{wrong}**\n"
-        f"Tỷ lệ chính xác: **{accuracy:.2f}%**"
-    )
+    if total_predictions == 0:
+        stats_text = "📊 **THỐNG KÊ DỰ ĐOÁN BOT** 📊\n\nChưa có đủ dữ liệu dự đoán."
+    else:
+        accuracy = (prediction_stats['correct'] / total_predictions) * 100
+        stats_text = (
+            "📊 **THỐNG KÊ DỰ ĐOÁN BOT** 📊\n\n"
+            f"Tổng số dự đoán: **{total_predictions}**\n"
+            f"Số lần đúng: **{prediction_stats['correct']}**\n"
+            f"Số lần sai: **{prediction_stats['wrong']}**\n"
+            f"Tỷ lệ chính xác: **{accuracy:.2f}%**"
+        )
     bot.reply_to(message, stats_text, parse_mode='Markdown')
 
 
@@ -980,7 +959,6 @@ def start_bot_threads():
             load_user_data()
             load_cau_patterns()
             load_codes()
-            load_prediction_stats() # Load thống kê khi khởi động
 
             # Start prediction loop in a separate thread
             prediction_thread = Thread(target=prediction_loop, args=(prediction_stop_event,))
